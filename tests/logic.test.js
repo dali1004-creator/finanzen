@@ -107,8 +107,12 @@ test('PayPal ohne Händler → Frage, keine Regel, nie Kategorie „PayPal“', 
 });
 
 test('PayPal mit Händler im Zweck → Händler zählt', () => {
-  const b = { name: 'PayPal Europe', text: 'LASTSCHRIFT', zweck: '1234 PP.5555.PP . Spotify AB, Ihr Einkauf bei Spotify AB' };
-  assert.deepEqual(L.merchant(b), { key: 'SPOTIFY AB', label: 'PayPal · Spotify AB' });
+  const pp = (zweck) => L.merchant({ name: 'PayPal Europe', text: 'LASTSCHRIFT', zweck });
+  assert.deepEqual(pp('1234 PP.5555.PP . Spotify AB, Ihr Einkauf bei Spotify AB'), { key: 'SPOTIFY AB', label: 'PayPal · Spotify AB' });
+  assert.deepEqual(pp('1234/PP.5555.PP/. Lieferando, Ihr Einkauf bei'), { key: 'LIEFERANDO', label: 'PayPal · Lieferando' });
+  // so sieht es bei David meistens aus: kein Händler → nur „PayPal“, nie die Referenznummer
+  assert.deepEqual(pp('1043620012345/PP.5555.PP/. , Ihr Einkauf bei'), { key: '', label: 'PayPal' });
+  assert.deepEqual(pp('1234 PP.5555.PP . , Ihr Einkauf bei'), { key: '', label: 'PayPal' });
 });
 
 test('Regel: Fitnessstudio einmal zuordnen, danach automatisch + wiederkehrend', () => {
@@ -161,6 +165,33 @@ test('Kategorien zusammenführen', () => {
   assert.equal(L.canonical(s, 'LEBENSMITTEL'), 'lebensmittel');
   L.renameCategory(s, 'lebensmittel', 'Lebensmittel'); // nur Schreibweise
   assert.deepEqual(L.allLabels(s), ['Lebensmittel']);
+});
+
+test('Oberkategorien: Aldi + Rewe → Einkaufen, einzeln weiter sichtbar', () => {
+  const s = L.emptyState();
+  L.addManual(s, { date: '2026-11-01', amt: 20, label: 'Aldi' });
+  L.addManual(s, { date: '2026-11-02', amt: 15, label: 'Rewe' });
+  L.addManual(s, { date: '2026-11-03', amt: 8, label: 'Mensa' });
+  L.setGroup(s, 'Aldi', 'Einkaufen');
+  L.setGroup(s, 'rewe', 'einkaufen'); // Schreibweise wird angeglichen
+  assert.deepEqual(L.overview(s, '2026-11').rows, [
+    { name: 'Einkaufen', amt: 35, children: [{ name: 'Aldi', amt: 20 }, { name: 'Rewe', amt: 15 }] },
+    { name: 'Mensa', amt: 8 },
+  ]);
+  // Kategorie, die selbst „Einkaufen“ heißt, landet in der Gruppe
+  L.addManual(s, { date: '2026-11-04', amt: 5, label: 'Einkaufen' });
+  assert.equal(L.overview(s, '2026-11').rows[0].amt, 40);
+  // Umbenennen der Kategorie behält die Gruppe, Umbenennen der Gruppe wirkt überall
+  L.renameCategory(s, 'Aldi', 'ALDI Süd');
+  assert.equal(L.groupOf(s, 'ALDI Süd'), 'Einkaufen');
+  L.renameGroup(s, 'Einkaufen', 'Supermarkt');
+  assert.deepEqual([L.groupOf(s, 'ALDI Süd'), L.groupOf(s, 'Rewe')], ['Supermarkt', 'Supermarkt']);
+  assert.deepEqual(L.suggestGroups(s, 'sup'), ['Supermarkt']);
+  // Gruppe entfernen
+  L.setGroup(s, 'Rewe', '');
+  assert.equal(L.groupOf(s, 'Rewe'), '');
+  // übersteht Sicherung
+  assert.equal(L.groupOf(L.validateState(JSON.parse(JSON.stringify(s))), 'ALDI Süd'), 'Supermarkt');
 });
 
 test('Vorschläge: zuletzt benutzt zuerst, Töpfe (Bargeld) nie', () => {

@@ -8,7 +8,7 @@ const DEFAULT_LABELS = ['Lebensmittel', 'Mensa', 'Essen gehen', 'Alkohol', 'Fitn
 const dict = () => Object.create(null); // Objekt ohne Prototyp: sicher gegen "__proto__"-Tricks
 
 export function emptyState() {
-  return { v: SCHEMA, manual: [], bank: [], rules: dict(), hints: dict(), pots: [CASH], balance: null, since: null };
+  return { v: SCHEMA, manual: [], bank: [], rules: dict(), hints: dict(), groups: dict(), pots: [CASH], balance: null, since: null };
 }
 
 // ---------- Grundlagen ----------
@@ -141,7 +141,8 @@ export const isCash = (b) => /bargeld|geldautomat/i.test(b.text);
 export function merchant(b) {
   if (isProvider(b)) {
     // PayPal schreibt den Händler (falls überhaupt) als "… PP.123.PP . Händler, Ihr Einkauf bei Händler"
-    const shop = cleanText((/einkauf bei\s+([^,]+)/i.exec(b.zweck) || /PP\/?\s*\.\s*([^,]+),/.exec(b.zweck))?.[1], 40);
+    const found = cleanText((/einkauf bei\s+([^,]+)/i.exec(b.zweck) || /\.PP\/?\s*\.\s*([^,]+),/.exec(b.zweck))?.[1], 40);
+    const shop = /[a-zäöü]{2}/i.test(found) ? found : ''; // Händler muss nach einem Namen aussehen, nicht nach einer Referenznummer
     const via = /klarna/i.test(b.name || b.zweck) ? 'Klarna' : 'PayPal';
     return { key: shop ? keyFrom(shop) : '', label: shop ? `${via} · ${shop}` : via };
   }
@@ -172,17 +173,57 @@ const isPot = (state, b) => !b.match && isPotLabel(state, b.cat);
 
 /** Vorschläge fürs Kategoriefeld; bei einem Bankumsatz zuerst, was bei diesem Händler schon gewählt wurde. */
 export function suggest(state, query = '', b = null, n = 4) {
-  const q = query.trim().toLowerCase();
   const learned = b ? Object.entries(state.hints[merchant(b).key] || {}).sort((x, y) => y[1] - x[1]).map((x) => x[0]) : [];
+  return pickMatches([...learned, ...allLabels(state), ...DEFAULT_LABELS], query, n, (l) => isPotLabel(state, l));
+}
+
+/** Die ersten n Einträge, die den Suchtext enthalten (ohne Doppelte, ohne exakten Treffer). */
+function pickMatches(list, query, n, skip = () => false) {
+  const q = query.trim().toLowerCase();
   const seen = new Set(), out = [];
-  for (const l of [...learned, ...allLabels(state), ...DEFAULT_LABELS]) {
+  for (const l of list) {
     const k = l.toLowerCase();
-    if (seen.has(k) || isPotLabel(state, l) || (q && (!k.includes(q) || k === q))) continue;
+    if (seen.has(k) || skip(l) || (q && (!k.includes(q) || k === q))) continue;
     seen.add(k); out.push(l);
     if (out.length === n) break;
   }
   return out;
 }
+
+// ---------- Oberkategorien (z. B. Aldi, Rewe → Einkaufen) ----------
+
+const DEFAULT_GROUPS = ['Einkaufen', 'Essen & Trinken', 'Freizeit', 'Wohnen', 'Verträge', 'Mobilität'];
+const gkey = (label) => label.toLowerCase();
+
+/** Alle vergebenen Oberkategorien. */
+export const allGroups = (state) => [...new Map(Object.values(state.groups).map((g) => [g.toLowerCase(), g])).values()];
+
+/** Oberkategorie einer Kategorie; heißt die Kategorie selbst wie eine Oberkategorie, gehört sie dorthin. */
+export function groupOf(state, label) {
+  if (!label) return '';
+  return state.groups[gkey(label)] || allGroups(state).find((g) => g.toLowerCase() === gkey(label)) || '';
+}
+
+/** Oberkategorie festlegen ('' entfernt sie). Gleiche Schreibweise wie eine bestehende Oberkategorie wird übernommen. */
+export function setGroup(state, label, group) {
+  const g = cleanText(group, 40), l = cleanText(label, 40);
+  if (!l) return;
+  delete state.groups[gkey(l)];
+  if (!g || gkey(g) === gkey(l)) return;
+  state.groups[gkey(l)] = allGroups(state).find((x) => x.toLowerCase() === g.toLowerCase()) || g;
+}
+
+/** Oberkategorie umbenennen bzw. mit einer anderen zusammenführen ('' löst sie auf). */
+export function renameGroup(state, from, to) {
+  const t = cleanText(to, 40);
+  const target = t && (allGroups(state).find((g) => g.toLowerCase() === t.toLowerCase() && g.toLowerCase() !== from.toLowerCase()) || t);
+  for (const k of Object.keys(state.groups)) {
+    if (state.groups[k].toLowerCase() !== from.toLowerCase()) continue;
+    if (target && target.toLowerCase() !== k) state.groups[k] = target; else delete state.groups[k];
+  }
+}
+
+export const suggestGroups = (state, query = '', n = 4) => pickMatches([...allGroups(state), ...DEFAULT_GROUPS], query, n);
 
 function learn(state, b, label) {
   const { key } = merchant(b);
@@ -349,6 +390,9 @@ export function renameCategory(state, from, to) {
   const wasPot = isPotLabel(state, from);
   state.pots = state.pots.filter((p) => !same(p));
   if (wasPot) setPot(state, target, true);
+  const group = state.groups[gkey(from)];
+  delete state.groups[gkey(from)];
+  if (group && !state.groups[gkey(target)]) state.groups[gkey(target)] = group;
 }
 
 export function setPot(state, label, on) {
@@ -472,7 +516,19 @@ export function overview(state, month) {
   rows.sort((a, b) => b.amt - a.amt);
   list.sort(byDateDesc);
   const spent = round2(rows.reduce((s, r) => s + r.amt, 0) + open);
-  return { income: round2(income), spent, open: round2(open), rows, list };
+
+  // Kategorien mit Oberkategorie zusammenfassen: { name, amt, children: [...] }
+  const grouped = [], byGroup = new Map();
+  for (const r of rows) {
+    const g = r.pot ? '' : groupOf(state, r.name);
+    if (!g) { grouped.push(r); continue; }
+    let G = byGroup.get(g.toLowerCase());
+    if (!G) { G = { name: g, amt: 0, children: [] }; byGroup.set(g.toLowerCase(), G); grouped.push(G); }
+    G.amt = round2(G.amt + r.amt);
+    G.children.push(r);
+  }
+  grouped.sort((a, b) => b.amt - a.amt);
+  return { income: round2(income), spent, open: round2(open), rows: grouped, list };
 }
 
 /** Wiederkehrende Abbuchungen: gleicher Händler, ähnlicher Betrag, höchstens einmal pro Monat, in ≥ 2 Monaten, zuletzt vor ≤ 40 Tagen. */
@@ -537,6 +593,10 @@ export function validateState(x) {
     if (!validKey(k) || !h || typeof h !== 'object') continue;
     s.hints[k] = dict();
     for (const [l, n] of Object.entries(h)) if (cleanText(l, 40) && Number.isInteger(n) && n > 0) s.hints[k][cleanText(l, 40)] = n;
+  }
+  for (const [k, g] of Object.entries(x.groups || {})) {
+    const label = cleanText(k, 40).toLowerCase(), group = cleanText(g, 40);
+    if (label && group) s.groups[label] = group;
   }
   if (Array.isArray(x.pots)) s.pots = [...new Set(x.pots.map((p) => cleanText(p, 40)).filter(Boolean))].slice(0, 20);
   if (x.balance && validNum(x.balance.value) && validNum(x.balance.base)) s.balance = { value: x.balance.value, base: x.balance.base };

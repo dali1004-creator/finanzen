@@ -12,7 +12,7 @@ const TAGS = {
 };
 
 const root = document.getElementById('app');
-const ui = { screen: 'add', shown: '', month: L.localISO().slice(0, 7), skip: new Set(), toast: '' };
+const ui = { screen: 'add', shown: '', month: L.localISO().slice(0, 7), skip: new Set(), expanded: new Set(), toast: '' };
 let state = load();
 let toastTimer = 0;
 
@@ -64,6 +64,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 const ICONS = {
   grid: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z', back: 'M15 18l-6-6 6-6', next: 'M9 18l6-6-6-6',
   check: 'M5 12l5 5L20 7', close: 'M6 6l12 12M18 6L6 18', down: 'M12 3v12M7 10l5 5 5-5M5 21h14', up: 'M12 15V3M7 8l5-5 5 5M5 21h14',
+  open: 'M6 9l6 6 6-6', shut: 'M18 15l-6-6-6 6',
 };
 function icon(name, size = 20) {
   const s = document.createElementNS(SVG, 'svg');
@@ -75,14 +76,34 @@ function icon(name, size = 20) {
   return s;
 }
 
-/** Vorschlags-Chips unter einem Kategoriefeld; aktualisieren sich beim Tippen. */
-function chipBox(input, bankTx, onPick) {
+/** Vorschlags-Chips unter einem Eingabefeld; aktualisieren sich beim Tippen. source(text) liefert die Vorschläge. */
+function chipsFor(input, source, onPick) {
   const box = h('div', { class: 'chips' });
-  const fill = () => box.replaceChildren(...L.suggest(state, input.value, bankTx).map((n) =>
+  const fill = () => box.replaceChildren(...source(input.value).map((n) =>
     h('button', { type: 'button', class: 'chip', onclick: () => { input.value = n; fill(); onPick?.(); } }, n)));
   input.addEventListener('input', fill);
   fill();
   return box;
+}
+const chipBox = (input, bankTx, onPick) => chipsFor(input, (q) => L.suggest(state, q, bankTx), onPick);
+
+/** „Oberkategorie (optional)“ – nur bei einer neuen Kategorie sichtbar; bei bekannten steht dezent die Zuordnung. */
+function groupPicker(labelInput, id) {
+  const input = h('input', { id, class: 'field', maxlength: 40, autocomplete: 'off', placeholder: 'z. B. Einkaufen' });
+  const box = h('div', { class: 'stack' },
+    h('label', { for: id, class: 'label' }, 'Oberkategorie (optional)'), input,
+    chipsFor(input, (q) => L.suggestGroups(state, q)));
+  const info = h('p', { class: 'hint' });
+  const update = () => {
+    const l = labelInput.value.trim(), g = l ? L.groupOf(state, l) : '';
+    info.textContent = g ? `gehört zu ${g}` : '';
+    info.hidden = !g;
+    // nur bei wirklich neuer Kategorie zeigen – nicht, solange der Text zu einer bekannten passt („leb“ → Lebensmittel)
+    box.hidden = !l || !!g || L.allLabels(state).some((x) => x.toLowerCase().startsWith(l.toLowerCase()));
+  };
+  labelInput.addEventListener('input', update);
+  update();
+  return { el: [info, box], update, value: () => (box.hidden ? '' : input.value.trim()) };
 }
 
 /** Einblendfenster von unten. dlg.add(...) fügt Inhalt hinzu. */
@@ -121,13 +142,16 @@ function viewAdd() {
   amount.addEventListener('input', check);
   label.addEventListener('input', check);
   amount.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); label.focus(); } });
+  const group = groupPicker(label, 'ober');
 
   const submit = (e) => {
     e.preventDefault();
     const amt = L.parseAmount(amount.value);
     if (!(amt > 0) || !label.value.trim()) return;
+    const g = group.value();
     const entry = L.addManual(state, { date: date.value, amt, label: label.value });
-    ui.toast = `Gespeichert: ${eur(amt)} · ${entry.label}`;
+    if (g) L.setGroup(state, entry.label, g);
+    ui.toast = `Gespeichert: ${eur(amt)} · ${entry.label}${g ? ` (${L.groupOf(state, entry.label)})` : ''}`;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { ui.toast = ''; document.querySelector('.toast')?.replaceChildren(); }, 2500);
     commit();
@@ -144,7 +168,8 @@ function viewAdd() {
           h('div', { class: 'amount-row' }, amount, h('span', { class: 'euro', 'aria-hidden': 'true' }, '€'))),
         h('div', { class: 'stack' },
           h('div', { class: 'field-group' }, h('label', { for: 'kat', class: 'label' }, 'An wen / Kategorie'), label),
-          chipBox(label, null, check)),
+          chipBox(label, null, () => { check(); group.update(); }),
+          group.el),
         h('div', { class: 'date-row' }, h('label', { for: 'datum', class: 'label' }, 'Datum'), date)),
       h('p', { class: 'toast', role: 'status' }, ui.toast ? [icon('check', 16), ui.toast] : null),
       send));
@@ -190,7 +215,7 @@ function viewOverview() {
 
     o.rows.length || o.open
       ? h('section', { class: 'section' }, h('h2', {}, 'Wohin das Geld geht'),
-        o.rows.map((r) => catRow(r, max)),
+        o.rows.map((r) => (r.children ? groupRows(r, max) : catRow(r, max))),
         o.open ? catRow({ name: 'Noch offen', amt: o.open, open: true }, max) : null)
       : null,
 
@@ -206,12 +231,31 @@ function viewOverview() {
     h('section', { class: 'section' }, h('h2', {}, 'Daten'), dataButtons()));
 }
 
-function catRow(r, max) {
+function catRow(r, max, onTap, child = false) {
   const bar = h('span', { class: `bar${r.open ? ' warn' : r.pot ? ' pot' : ''}` });
   bar.style.width = `${Math.max(2, Math.round((r.amt / max) * 100))}%`;
-  return h('button', { type: 'button', class: `cat-row${r.open ? ' warn' : ''}`, onclick: () => (r.open ? go('questions') : openCategory(r)) },
-    h('span', { class: 'cat-line' }, h('span', {}, r.name), h('strong', {}, eur(r.amt))),
-    h('span', { class: 'track' }, bar));
+  const name = r.children
+    ? h('span', { class: 'cat-name' }, r.name, h('span', { class: 'muted' }, `· ${r.children.length}`), icon(r.expanded ? 'shut' : 'open', 16))
+    : r.name;
+  return h('button', {
+    type: 'button', class: `cat-row${r.open ? ' warn' : ''}${child ? ' child' : ''}`,
+    'aria-expanded': r.children ? String(!!r.expanded) : null,
+    onclick: onTap || (() => (r.open ? go('questions') : openCategory(r))),
+  },
+  h('span', { class: 'cat-line' }, h('span', {}, name), h('strong', {}, eur(r.amt))),
+  h('span', { class: 'track' }, bar));
+}
+
+/** Oberkategorie: Summenzeile, antippen klappt die einzelnen Kategorien auf. */
+function groupRows(g, max) {
+  const key = g.name.toLowerCase(), expanded = ui.expanded.has(key);
+  const toggle = () => { if (expanded) ui.expanded.delete(key); else ui.expanded.add(key); render(); };
+  return [
+    catRow({ ...g, expanded }, max, toggle),
+    expanded ? h('div', { class: 'children' },
+      g.children.map((c) => catRow(c, max, null, true)),
+      h('button', { type: 'button', class: 'link-btn', onclick: () => openGroup(g) }, `„${g.name}“ umbenennen`)) : null,
+  ];
 }
 
 function txRow(t, parent) {
@@ -278,11 +322,20 @@ function viewQuestions() {
     input.addEventListener('input', enable);
     const remember = L.canRemember(b) ? h('input', { type: 'checkbox', checked: true }) : null;
     const name = who.label;
-    body = h('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); if (!input.value.trim()) return; L.setCategory(state, b.id, input.value, !!remember?.checked); commit(); } },
+    const group = groupPicker(input, 'ober-frage');
+    body = h('form', { class: 'stack', onsubmit: (e) => {
+      e.preventDefault();
+      if (!input.value.trim()) return;
+      const g = group.value();
+      L.setCategory(state, b.id, input.value, !!remember?.checked);
+      if (g) L.setGroup(state, L.canonical(state, input.value), g);
+      commit();
+    } },
       h('p', { class: 'q-ask' }, L.isProvider(b) && !who.key ? `${name} ist nur der Zahlungsweg. Wofür hast du bezahlt?` : 'Wofür war das?'),
       h('label', { for: 'antwort', class: 'label' }, 'Kategorie'),
       input,
-      chipBox(input, b, enable),
+      chipBox(input, b, () => { enable(); group.update(); }),
+      group.el,
       remember ? h('label', { class: 'check' }, remember,
         q.same ? `Auch die ${q.same} weiteren und alle künftigen Umsätze von „${name}“ so zuordnen` : `Künftige Umsätze von „${name}“ automatisch so zuordnen`) : null,
       h('div', { class: 'row2' }, later, saveBtn));
@@ -321,6 +374,7 @@ function openCategory(r) {
   const items = L.overview(state, ui.month).list.filter((t) => t.label === name);
   const dlg = sheet(r.name);
   const input = h('input', { id: 'kat-name', class: 'field', value: name, maxlength: 40, autocomplete: 'off' });
+  const groupInput = h('input', { id: 'kat-ober', class: 'field', value: L.groupOf(state, name), maxlength: 40, autocomplete: 'off', placeholder: 'keine' });
   const pot = h('input', { type: 'checkbox', checked: L.isPotLabel(state, name) });
   dlg.add(
     r.pot ? h('p', { class: 'hint' }, `${eur(r.amt)} wurden diesen Monat abgehoben bzw. aufgeladen, aber noch keiner Ausgabe zugeordnet. Trag Barausgaben auf der Startseite ein, dann wird dieser Betrag kleiner.`) : null,
@@ -330,13 +384,33 @@ function openCategory(r) {
       const to = input.value.trim();
       if (!to) return;
       if (to !== name) L.renameCategory(state, name, to);
-      L.setPot(state, L.canonical(state, to), pot.checked);
+      const final = L.canonical(state, to);
+      L.setPot(state, final, pot.checked);
+      L.setGroup(state, final, groupInput.value);
       dlg.close();
       commit();
     } },
     h('label', { for: 'kat-name', class: 'label' }, 'Name – gleicher Name wie eine andere Kategorie führt beide zusammen'), input,
+    h('label', { for: 'kat-ober', class: 'label' }, 'Oberkategorie – leer lassen für keine'), groupInput,
+    chipsFor(groupInput, (q) => L.suggestGroups(state, q)),
     h('label', { class: 'check' }, pot, 'Ist ein Topf (z. B. Bargeld, Mensakarte): Abheben/Aufladen zählt nicht als Ausgabe, sondern deine Einträge.'),
     h('button', { type: 'submit', class: 'btn primary' }, 'Speichern')));
+}
+
+function openGroup(g) {
+  const dlg = sheet(`Oberkategorie „${g.name}“`);
+  const input = h('input', { id: 'gruppe', class: 'field', value: g.name, maxlength: 40, autocomplete: 'off' });
+  dlg.add(h('form', { class: 'stack', onsubmit: (e) => {
+    e.preventDefault();
+    L.renameGroup(state, g.name, input.value);
+    ui.expanded.delete(g.name.toLowerCase());
+    if (input.value.trim()) ui.expanded.add(L.groupOf(state, g.children[0].name).toLowerCase());
+    dlg.close();
+    commit();
+  } },
+  h('label', { for: 'gruppe', class: 'label' }, 'Name'), input,
+  h('p', { class: 'hint' }, `Gilt für ${g.children.map((c) => c.name).join(', ')}. Gleicher Name wie eine andere Oberkategorie führt beide zusammen. Leer lassen löst die Oberkategorie auf – die Kategorien bleiben erhalten.`),
+  h('button', { type: 'submit', class: 'btn primary' }, 'Speichern')));
 }
 
 function openTx(t) {

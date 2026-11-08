@@ -1,7 +1,7 @@
 // Service Worker: hält die App-Dateien offline vor. Er lädt nur eigene Dateien
 // und sieht nie Finanzdaten (die liegen im Speicher der Seite, nicht im Cache).
 // Bei jeder Code-Änderung VERSION erhöhen, sonst behält das iPhone die alte Fassung.
-const VERSION = 'finanzen-v1';
+const VERSION = 'finanzen-v2';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'logic.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 

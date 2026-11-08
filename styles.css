@@ -107,6 +107,11 @@ input::placeholder { color: var(--muted); opacity: .6; }
 .cat-row { width: 100%; display: flex; flex-direction: column; gap: 6px; padding: 4px 0; border: 0; background: none; text-align: left; }
 .cat-line { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
 .cat-row.warn .cat-line { color: var(--warn-text); }
+.cat-name { display: inline-flex; align-items: center; gap: 6px; }
+.children { display: flex; flex-direction: column; gap: 10px; margin: -4px 0 4px 4px; padding-left: 14px; border-left: 2px solid var(--line); }
+.cat-row.child .cat-line { font-size: 14px; }
+.cat-row.child .bar { opacity: .55; }
+.link-btn { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: none; color: var(--accent); font-size: 14px; font-weight: 500; }
 .track { display: block; height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
 .bar { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
 .bar.warn { background: var(--warn); }
