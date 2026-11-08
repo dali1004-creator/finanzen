@@ -1,0 +1,9 @@
+{
+  "name": "finanzen",
+  "private": true,
+  "type": "module",
+  "description": "Schlichte Ausgaben-App mit Sparkassen-Abgleich. Ohne Abhängigkeiten.",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

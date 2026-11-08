@@ -1,0 +1,10 @@
+# Niemals Finanzdaten ins Repo – auch nicht aus Versehen
+*.csv
+*.CSV
+*.xlsx
+*.pdf
+finanzen-sicherung-*.json
+umsaetze/
+node_modules/
+.DS_Store
+Thumbs.db
